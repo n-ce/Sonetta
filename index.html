@@ -189,7 +189,7 @@
         alert('Library is empty. Load a file and convert first, or no tracks were found.');
         return;
       }
-      const jsonString = JSON.stringify(library.songshift, null, 2); // Pretty print JSON
+      const jsonString = JSON.stringify(library, null, 2); // Pretty print JSON
       const blob = new Blob([jsonString], {type: 'application/json'});
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
