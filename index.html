@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sonetta</title>
+</head>
+<body>
+    <main>
+        <label for="jsonFileInput">Insert your songshift export file here</label>
+        <input type="file" id="jsonFileInput" accept=".json">
+        <br><br>
+        <h1 id="statusHeader">Waiting for file...</h1>
+        <button id="downloadBtn" style="display: none;">Download Library</button>
+    </main>
+
+    <script>
+        const jsonFileInput = document.getElementById('jsonFileInput');
+        const statusHeader = document.getElementById('statusHeader'); // Renamed 'teller' to 'statusHeader' for clarity
+        const downloadBtn = document.getElementById('downloadBtn'); // New button for download
+
+        const pipedinstanceslist = 'https://raw.githubusercontent.com/n-ce/Uma/main/dynamic_instances.json';
+
+        const library = {
+            songshift: {} // This will store your processed metadata
+        };
+
+        let currentTracksData = null; // To hold the parsed JSON from the input file
+
+        // Your getMeta function, slightly refined for better error handling and promise return
+        async function getMeta(apiInstances, searchQuery, instanceIndex = 0) {
+            // Ensure we don't go out of bounds for the api array
+            if (instanceIndex >= apiInstances.length) {
+                // All instances tried and failed for this search query
+                console.error(`All API instances failed for: "${searchQuery}"`);
+                throw new Error(`Failed to get metadata for "${searchQuery}" from any instance.`);
+            }
+
+            const currentApiUrl = apiInstances[instanceIndex].api; // Access the 'api' property
+
+            try {
+                const res = await fetch(`${currentApiUrl}/search?q=${encodeURIComponent(searchQuery)}&filter=music_songs`);
+
+                if (!res.ok) {
+                    throw new Error(`HTTP error ${res.status} from ${currentApiUrl}`);
+                }
+                const data = await res.json();
+
+                if (!data.items || data.items.length === 0) {
+                    throw new Error(`No items found from ${currentApiUrl}`);
+                }
+
+                const item = data.items[0];
+                // Check if data.url exists before trying substring, and validate length
+                if (!item.url || item.url.length < 10) { // Assuming min length for a valid ID substring
+                    throw new Error(`Invalid or missing URL for item from ${currentApiUrl}`);
+                }
+                const id = item.url.substring(9); // Extract ID as per your logic
+
+                // Store the processed metadata in the library
+                library.songshift[id] = {
+                    id: id,
+                    title: item.title,
+                    author: item.uploaderName ? item.uploaderName + ' - Topic' : item.uploaderName, // Handle null uploaderName
+                    duration: item.duration,
+                    channelUrl: item.uploaderUrl
+                };
+
+                // console.log(`Successfully processed "${searchQuery}" using ${currentApiUrl}`);
+                return id; // Return the ID to signify success for this getMeta call
+
+            } catch (error) {
+                console.warn(`Attempt on ${currentApiUrl} for "${searchQuery}" failed: ${error.message}. Trying next instance...`);
+                // Recursively try the next API instance
+                return getMeta(apiInstances, searchQuery, instanceIndex + 1);
+            }
+        }
+
+
+        // Function to handle the conversion process
+        async function processLibrary() {
+            if (!currentTracksData) {
+                statusHeader.textContent = 'Please load a JSON file first.';
+                return;
+            }
+
+            statusHeader.textContent = 'Conversion in progress... Fetching Piped instances.';
+
+            try {
+                // Fetch Piped instances
+                const instancesRes = await fetch(pipedinstanceslist);
+                if (!instancesRes.ok) {
+                    throw new Error(`Failed to fetch Piped instances: HTTP error ${instancesRes.status}`);
+                }
+                const instancesData = await instancesRes.json();
+
+                const availableApiInstances = instancesData.piped
+                                                .concat(instancesData.hls)
+                                                .filter(instance => instance.api && instance.active === true); // Filter for active and API-enabled
+
+                if (availableApiInstances.length === 0) {
+                    throw new Error("No functional Piped API instances found. Cannot proceed with searches.");
+                }
+
+                statusHeader.textContent = `Processing ${currentTracksData.length} tracks...`;
+
+                // Create an array of Promises for each track search
+                const trackProcessingPromises = currentTracksData.map(track => {
+                    const searchQuery = track.track + ' ' + track.artist;
+                    // Call getMeta, and catch any final failures for individual tracks
+                    return getMeta(availableApiInstances, searchQuery)
+                        .catch(error => {
+                            console.error(`Final failure for "${searchQuery}": ${error.message}`);
+                            return null; // Return null if the track search ultimately fails after retries
+                        });
+                });
+
+                // Use Promise.all to parallelize all track fetches
+                await Promise.all(trackProcessingPromises);
+
+                statusHeader.textContent = 'Conversion complete! Click to download library.';
+                downloadBtn.style.display = 'block'; // Show download button
+
+            } catch (error) {
+                console.error("An error occurred during processing:", error);
+                statusHeader.textContent = `Conversion failed: ${error.message}`;
+                alert('An error occurred during conversion. Check console for details.');
+            } finally {
+                // This block will always execute after try/catch
+                // You can add cleanup or final UI updates here if needed.
+            }
+        }
+
+        // Event listener for file input change
+        jsonFileInput.addEventListener('change', (event) => {
+            const file = event.target.files[0];
+            if (!file) {
+                statusHeader.textContent = 'No file selected.';
+                currentTracksData = null;
+                downloadBtn.style.display = 'none';
+                return;
+            }
+
+            statusHeader.textContent = 'Reading file...';
+            downloadBtn.style.display = 'none'; // Hide download button on new file selection
+
+            const reader = new FileReader();
+
+            reader.onload = (e) => {
+                try {
+                    currentTracksData = JSON.parse(e.target.result);
+                    if (!Array.isArray(currentTracksData)) {
+                        throw new Error('JSON file must contain an array of track objects.');
+                    }
+                    statusHeader.textContent = 'File loaded successfully. Starting conversion...';
+                    processLibrary(); // Start the conversion process after file is read
+                } catch (error) {
+                    console.error('Error parsing JSON:', error);
+                    statusHeader.textContent = `Error: Invalid JSON file. ${error.message}`;
+                    currentTracksData = null;
+                }
+            };
+
+            reader.onerror = () => {
+                statusHeader.textContent = 'Failed to read file.';
+                currentTracksData = null;
+            };
+
+            reader.readAsText(file);
+        });
+
+        // Function to handle downloading the library
+        downloadBtn.addEventListener('click', () => {
+            if (Object.keys(library.songshift).length === 0) {
+                alert('Library is empty. Load a file and convert first.');
+                return;
+            }
+            const jsonString = JSON.stringify(library.songshift, null, 2); // Pretty print JSON
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'sonetta_library.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url); // Clean up the object URL
+        });
+
+        // Initial status message
+        statusHeader.textContent = 'Please select a Songshift export file.';
+    </script>
+</body>
+</html>
