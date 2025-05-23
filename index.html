@@ -102,7 +102,6 @@
 
                 const availableApiInstances = instancesData.piped
                                                 .concat(instancesData.hls)
-                                                .filter(instance => instance.api && instance.active === true);
 
                 if (availableApiInstances.length === 0) {
                     throw new Error("No functional Piped API instances found. Cannot proceed with searches.");
